@@ -1,0 +1,30 @@
+﻿import React from 'react';
+import { Navigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+
+const ProtectedRoute = ({ children, allowedRoles }) => {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <div className="spinner"></div>
+        <p>Verifying session...</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (allowedRoles && !allowedRoles.includes(user.role)) {
+    const fallbackPath =
+      user.role === 'admin' ? '/admin/dashboard' : '/student/dashboard';
+    return <Navigate to={fallbackPath} replace />;
+  }
+
+  return children;
+};
+
+export default ProtectedRoute;
