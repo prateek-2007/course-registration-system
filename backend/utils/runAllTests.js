@@ -41,10 +41,9 @@ setTimeout(async () => {
 
   try {
     console.log('\n=====================================================================');
-    console.log('   RUNNING ALL 25 MASTER TEST CASES (SECURITY, SQL, CONCURRENCY)');
+    console.log('   RUNNING ALL 26 MASTER TEST CASES (SECURITY, DATES, SQL, RACE)');
     console.log('=====================================================================\n');
 
-    // --- A. AUTHENTICATION & SECURITY ---
     const t1 = await apiReq('/health');
     check(1, 'Auth', 'Health Check Endpoint', t1.status === 200 && t1.data?.success, `HTTP ${t1.status} - ${t1.data?.database}`);
 
@@ -69,7 +68,6 @@ setTimeout(async () => {
     const t5 = await apiReq('/courses');
     check(5, 'Security', 'Block Unauthenticated Access (No JWT)', t5.status === 401, `HTTP ${t5.status} - ${t5.data?.message}`);
 
-    // Register a fresh test student
     const testStuEmail = `qa_stu_${runId}@university.edu`;
     const testStuRoll = `QA${runId}`;
     const t6Reg = await apiReq('/auth/register', {
@@ -81,14 +79,12 @@ setTimeout(async () => {
     const t6Me = await apiReq('/auth/me', { token: stuToken });
     check(6, 'Auth', 'Student Register + /api/auth/me', t6Reg.status === 201 && t6Me.status === 200 && t6Me.data?.user?.email === testStuEmail, `Registered ${testStuRoll} & verified /me`);
 
-    // Login as Admin 1 & Admin 2
     const admin1Login = await apiReq('/auth/login', {
       method: 'POST',
       body: { email: 'admin@university.edu', password: 'Admin@123', expectedRole: 'admin' },
     });
     const adminToken = admin1Login.data?.token;
 
-    // --- B. PASSWORD MANAGEMENT ---
     const t7 = await apiReq('/auth/change-password', {
       method: 'PUT',
       token: stuToken,
@@ -117,11 +113,10 @@ setTimeout(async () => {
     });
     check(9, 'Password', 'Forgot Password Recovery & Login', t9Forgot.status === 200 && t9Login.status === 200, `Recovered via Email+StudentID & logged in`);
 
-    // --- C. ROLE-BASED ACCESS CONTROL (RBAC) ---
     const t10 = await apiReq('/admin/courses', {
       method: 'POST',
       token: stuToken,
-      body: { courseCode: 'HACK99', courseName: 'Hack', description: 'No', credits: 3, date: '2026-12-01', startTime: '10:00 AM', endTime: '11:00 AM', capacity: 10 },
+      body: { courseCode: 'HACK99', courseName: 'Hack', description: 'No', credits: 3, date: '2026-12-10', startTime: '10:00 AM', endTime: '11:00 AM', capacity: 10 },
     });
     check(10, 'RBAC', 'Block Student Creating Course', t10.status === 403, `HTTP ${t10.status} - ${t10.data?.message}`);
 
@@ -131,7 +126,6 @@ setTimeout(async () => {
     const t12 = await apiReq('/admin/audit-logs', { token: stuToken });
     check(12, 'RBAC', 'Block Student Viewing Audit Logs', t12.status === 403, `HTTP ${t12.status} - ${t12.data?.message}`);
 
-    // --- D. ADMIN COURSE VALIDATION & CRUD ---
     const t13 = await apiReq('/admin/courses', {
       method: 'POST',
       token: adminToken,
@@ -146,7 +140,6 @@ setTimeout(async () => {
     });
     check(14, 'Course', 'Reject Course Where Capacity <= 0', t14.status === 400, `HTTP ${t14.status} - ${t14.data?.message}`);
 
-    // Create 4 test courses: Base (10-12), Overlap (11-1), Adjacent (12-2), Expired Deadline, Race (Cap 1)
     const cBaseRes = await apiReq('/admin/courses', {
       method: 'POST',
       token: adminToken,
@@ -185,7 +178,6 @@ setTimeout(async () => {
     });
     check(16, 'Course', 'Reject Duplicate Course Code', t16.status === 409, `HTTP ${t16.status} - ${t16.data?.message}`);
 
-    // Create Overlap, Adjacent, Expired, and 1-Seat Race courses
     const cOverlap = (await apiReq('/admin/courses', {
       method: 'POST',
       token: adminToken,
@@ -200,12 +192,29 @@ setTimeout(async () => {
     })).data?.course;
     if (cAdjacent) createdCourseIds.push(cAdjacent._id);
 
+    // Test #26: Past date & applyDeadline > startDate rejection
+    const pastDateRes = await apiReq('/admin/courses', {
+      method: 'POST',
+      token: adminToken,
+      body: { courseCode: `QAP_${runId}`, courseName: 'Past Date Course', facultyName: 'Dr. P', description: 'Should fail', credits: 3, date: '2020-01-01', startDate: '2020-01-05', applyDeadline: '2020-01-02', startTime: '09:00 AM', endTime: '10:00 AM', capacity: 10 },
+    });
+    const badOrderRes = await apiReq('/admin/courses', {
+      method: 'POST',
+      token: adminToken,
+      body: { courseCode: `QAO2_${runId}`, courseName: 'Bad Order Course', facultyName: 'Dr. P', description: 'Should fail', credits: 3, date: '2026-12-20', startDate: '2026-12-20', applyDeadline: '2026-12-25', startTime: '09:00 AM', endTime: '10:00 AM', capacity: 10 },
+    });
+    check(26, 'Course', 'Reject Past Date & Deadline > StartDate', pastDateRes.status === 400 && badOrderRes.status === 400, `Past: HTTP ${pastDateRes.status} | Deadline > Start: HTTP ${badOrderRes.status}`);
+
+    // Create valid course, then backdate apply_deadline in DB to simulate time passing
     const cExpired = (await apiReq('/admin/courses', {
       method: 'POST',
       token: adminToken,
-      body: { courseCode: `QAE_${runId}`, courseName: 'QA Expired', facultyName: 'Dr. E', description: 'Past deadline', credits: 3, date: '2026-12-16', startDate: '2026-11-10', applyDeadline: '2026-11-01', startTime: '09:00 AM', endTime: '10:00 AM', capacity: 10 },
+      body: { courseCode: `QAE_${runId}`, courseName: 'QA Expired', facultyName: 'Dr. E', description: 'Simulated expired deadline', credits: 3, date: '2026-12-16', startDate: '2026-12-20', applyDeadline: '2026-12-19', startTime: '09:00 AM', endTime: '10:00 AM', capacity: 10 },
     })).data?.course;
-    if (cExpired) createdCourseIds.push(cExpired._id);
+    if (cExpired) {
+      createdCourseIds.push(cExpired._id);
+      await db.query("UPDATE courses SET apply_deadline = '2026-11-01' WHERE id = ?", [cExpired._id]);
+    }
 
     const cRace = (await apiReq('/admin/courses', {
       method: 'POST',
@@ -214,18 +223,9 @@ setTimeout(async () => {
     })).data?.course;
     if (cRace) createdCourseIds.push(cRace._id);
 
-    // --- E. ENROLLMENT ENGINE & CONCURRENCY ---
     const t18 = await apiReq(`/enrollments/${cBase._id}`, { method: 'POST', token: stuToken });
     check(18, 'Enroll', 'Valid Registration & Seat Decrement', t18.status === 201 && t18.data?.course?.enrolledCount === 1 && t18.data?.course?.availableSeats === 4, `HTTP ${t18.status} - Seats: ${t18.data?.course?.enrolledCount}/${t18.data?.course?.capacity}`);
 
-    // Now test #17: Admin cannot reduce cBase capacity to 0 while 1 student is enrolled (min cap is 1, so let's enroll 2nd student or test cap < enrolled)
-    const t17Update = await apiReq(`/admin/courses/${cBase._id}`, {
-      method: 'PUT',
-      token: adminToken,
-      body: { capacity: 1 }, // First reduce to 1 (valid), then test reducing below 1 after enrolling 2nd student
-    });
-    // Better: enroll a 2nd student on cBase (after setting cap to 2) and try reducing cap to 1
-    await apiReq(`/admin/courses/${cBase._id}`, { method: 'PUT', token: adminToken, body: { capacity: 5 } });
     const stu2Reg = await apiReq('/auth/register', {
       method: 'POST',
       body: { name: 'QA Student 2', email: `qa_stu2_${runId}@university.edu`, password: 'Password123', studentId: `QA2_${runId}` },
@@ -236,7 +236,7 @@ setTimeout(async () => {
     const t17 = await apiReq(`/admin/courses/${cBase._id}`, {
       method: 'PUT',
       token: adminToken,
-      body: { capacity: 1 }, // 2 students enrolled, trying to reduce to 1 -> MUST FAIL 400
+      body: { capacity: 1 },
     });
     check(17, 'Course', 'Reject Capacity < Current EnrolledCount', t17.status === 400, `HTTP ${t17.status} - ${t17.data?.message}`);
 
@@ -252,7 +252,6 @@ setTimeout(async () => {
     const t22 = await apiReq(`/enrollments/${cExpired._id}`, { method: 'POST', token: stuToken });
     check(22, 'Enroll', 'Expired Apply Deadline Rejected', t22.status === 400, `HTTP ${t22.status} - ${t22.data?.message}`);
 
-    // Create 3 more temp students for a 5-way simultaneous race for 1 seat in cRace!
     const raceTokens = [stuToken, stu2Token];
     for (let k = 3; k <= 5; k++) {
       const r = await apiReq('/auth/register', {
@@ -277,13 +276,11 @@ setTimeout(async () => {
       `Winners: ${winners.length}, Rejected: ${losers.length}, DB Enrolled: ${cRaceCheck.data?.course?.enrolledCount}/1`
     );
 
-    // --- F. OWNERSHIP, ADMIN DELETE SEAT RELEASE, & MYSQL TRIGGERS ---
     const winnerIdx = raceResponses.findIndex((r) => r.status === 201);
     const loserIdx = raceResponses.findIndex((r) => r.status !== 201);
     const wrongDrop = await apiReq(`/enrollments/${cRace._id}`, { method: 'DELETE', token: raceTokens[loserIdx] });
     const rightDrop = await apiReq(`/enrollments/${cRace._id}`, { method: 'DELETE', token: raceTokens[winnerIdx] });
 
-    // Also test Admin deleting Student 2 automatically decrements cBase enrolledCount from 2 -> 1
     const stu2IdToDelete = createdStudentIds[1];
     const adminDelStu = await apiReq(`/admin/students/${stu2IdToDelete}`, { method: 'DELETE', token: adminToken });
     const cBaseAfterDel = await apiReq(`/courses/${cBase._id}`, { token: adminToken });
@@ -293,10 +290,9 @@ setTimeout(async () => {
       'Integrity',
       'Ownership Drop + Admin Delete Seat Release',
       wrongDrop.status === 404 && rightDrop.status === 200 && adminDelStu.status === 200 && cBaseAfterDel.data?.course?.enrolledCount === 1,
-      `Non-owner: 404 | Owner drop: 200 | Admin del student restored seats to ${cBaseAfterDel.data?.course?.enrolledCount}/5`
+      `Non-owner: 404 | Owner drop: 200 | Admin del restored seats to ${cBaseAfterDel.data?.course?.enrolledCount}/5`
     );
 
-    // Test both MySQL triggers directly
     let auditTriggerOk = false;
     let capTriggerOk = false;
     try {
@@ -314,10 +310,9 @@ setTimeout(async () => {
       'MySQL Triggers',
       'DB-Level Immutability & Capacity Guards',
       auditTriggerOk && capTriggerOk,
-      `Audit DELETE blocked: ${auditTriggerOk} | Capacity overflow UPDATE blocked: ${capTriggerOk}`
+      `Audit DELETE blocked: ${auditTriggerOk} | Capacity overflow blocked: ${capTriggerOk}`
     );
 
-    // --- CLEANUP TEMP QA DATA ---
     for (const cid of createdCourseIds) {
       await apiReq(`/admin/courses/${cid}?force=true`, { method: 'DELETE', token: adminToken });
     }
@@ -325,7 +320,6 @@ setTimeout(async () => {
       await apiReq(`/admin/students/${sid}`, { method: 'DELETE', token: adminToken });
     }
 
-    // Sort by test number and display scorecard
     results.sort((a, b) => a['#'] - b['#']);
     console.table(results);
 

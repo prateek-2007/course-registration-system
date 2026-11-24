@@ -2,15 +2,26 @@
 import api from '../api/axios';
 import { useLiveSync } from '../api/useLiveSync';
 
+const getOffsetDateIso = (daysAhead = 0) => {
+  const d = new Date();
+  d.setDate(d.getDate() + daysAhead);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return ${y}--;
+};
+
+const todayIso = getOffsetDateIso(0);
+
 const initialCourseForm = {
   courseName: '',
   courseCode: '',
   facultyName: '',
   description: '',
   credits: 4,
-  date: '2026-11-23',
-  startDate: '2026-12-01',
-  applyDeadline: '2026-11-30',
+  date: getOffsetDateIso(3),
+  startDate: getOffsetDateIso(7),
+  applyDeadline: getOffsetDateIso(5),
   startTime: '10:00 AM',
   endTime: '12:00 PM',
   capacity: 400,
@@ -364,7 +375,7 @@ const AdminDashboard = () => {
           <span className="kpi-value">{stats.totalAdmins || admins.length}</span>
         </div>
         <div className="kpi-card">
-          <span className="kpi-label">Active Courses</span>
+          <span className="kpi-label">Open Courses</span>
           <span className="kpi-value">
             {stats.activeCourses} / {stats.totalCourses}
           </span>
@@ -476,6 +487,7 @@ const AdminDashboard = () => {
                   <input
                     name="date"
                     type="date"
+                    min={editingCourseId ? undefined : todayIso}
                     required
                     value={formData.date}
                     onChange={handleInputChange}
@@ -487,6 +499,7 @@ const AdminDashboard = () => {
                   <input
                     name="startDate"
                     type="date"
+                    min={editingCourseId ? undefined : todayIso}
                     required
                     value={formData.startDate}
                     onChange={handleInputChange}
@@ -498,6 +511,8 @@ const AdminDashboard = () => {
                   <input
                     name="applyDeadline"
                     type="date"
+                    min={editingCourseId ? undefined : todayIso}
+                    max={formData.startDate || undefined}
                     required
                     value={formData.applyDeadline}
                     onChange={handleInputChange}
@@ -1189,3 +1204,4 @@ const AdminDashboard = () => {
 };
 
 export default AdminDashboard;
+

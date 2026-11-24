@@ -44,18 +44,76 @@ const toIsoDateString = (val) => {
   if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim())) {
     return val.trim();
   }
-  if (val instanceof Date) {
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
     const y = val.getFullYear();
     const m = String(val.getMonth() + 1).padStart(2, '0');
     const d = String(val.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }
-  return String(val).split('T')[0];
+  const str = String(val).split('T')[0];
+  return /^\d{4}-\d{2}-\d{2}$/.test(str) ? str : null;
+};
+
+/**
+ * Strictly validates that a string is a real calendar date (e.g., rejects 2026-02-30)
+ */
+const isValidCalendarDate = (dateStr) => {
+  const iso = toIsoDateString(dateStr);
+  if (!iso) return false;
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return (
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() === m - 1 &&
+    dt.getUTCDate() === d
+  );
+};
+
+/**
+ * Validates course date, startDate, and applyDeadline:
+ * 1. Must be real calendar dates (YYYY-MM-DD)
+ * 2. When allowPastDates is false, none of them can be earlier than today
+ * 3. applyDeadline cannot be after startDate
+ */
+const validateCourseDates = ({ date, startDate, applyDeadline, allowPastDates = false }) => {
+  if (!isValidCalendarDate(date)) {
+    return 'Class timetable date must be a valid calendar date (YYYY-MM-DD).';
+  }
+  if (startDate && !isValidCalendarDate(startDate)) {
+    return 'Course start date must be a valid calendar date (YYYY-MM-DD).';
+  }
+  if (applyDeadline && !isValidCalendarDate(applyDeadline)) {
+    return 'Last date to apply must be a valid calendar date (YYYY-MM-DD).';
+  }
+
+  const isoDate = toIsoDateString(date);
+  const isoStart = toIsoDateString(startDate) || isoDate;
+  const isoDeadline = toIsoDateString(applyDeadline) || isoStart;
+  const today = getLocalTodayIso();
+
+  if (!allowPastDates) {
+    if (isoDate < today) {
+      return `Class timetable date (${isoDate}) cannot be in the past (today is ${today}).`;
+    }
+    if (isoStart < today) {
+      return `Course start date (${isoStart}) cannot be in the past (today is ${today}).`;
+    }
+    if (isoDeadline < today) {
+      return `Last date to apply (${isoDeadline}) cannot be in the past (today is ${today}).`;
+    }
+  }
+
+  if (isoDeadline > isoStart) {
+    return `Last date to apply (${isoDeadline}) cannot be after the course start date (${isoStart}).`;
+  }
+
+  return null;
 };
 
 const isDeadlineExpired = (applyDeadline) => {
   if (!applyDeadline) return false;
   const deadlineStr = toIsoDateString(applyDeadline);
+  if (!deadlineStr) return false;
   const todayStr = getLocalTodayIso();
   return todayStr > deadlineStr;
 };
@@ -67,6 +125,14 @@ const formatCourseRow = (row) => {
   const scheduleDate = toIsoDateString(row.date);
   const startDate = toIsoDateString(row.start_date) || scheduleDate;
   const applyDeadline = toIsoDateString(row.apply_deadline) || startDate;
+  const deadlinePassed = isDeadlineExpired(applyDeadline);
+
+  const effectiveStatus =
+    row.status === 'inactive'
+      ? 'inactive'
+      : deadlinePassed
+      ? 'closed'
+      : 'active';
 
   return {
     _id: String(row.id),
@@ -79,7 +145,8 @@ const formatCourseRow = (row) => {
     date: scheduleDate,
     startDate,
     applyDeadline,
-    isDeadlinePassed: isDeadlineExpired(applyDeadline),
+    isDeadlinePassed: deadlinePassed,
+    effectiveStatus,
     startTime: row.start_time,
     endTime: row.end_time,
     capacity,
@@ -103,6 +170,8 @@ module.exports = {
   doTimeSlotsOverlap,
   getLocalTodayIso,
   toIsoDateString,
+  isValidCalendarDate,
+  validateCourseDates,
   isDeadlineExpired,
   formatCourseRow,
 };

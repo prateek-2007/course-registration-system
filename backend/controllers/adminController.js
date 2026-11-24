@@ -1,6 +1,12 @@
 ﻿const bcrypt = require('bcryptjs');
 const { getPool } = require('../config/db');
-const { parseTimeToMinutes, toIsoDateString, formatCourseRow } = require('../utils/timeUtils');
+const {
+  parseTimeToMinutes,
+  getLocalTodayIso,
+  toIsoDateString,
+  validateCourseDates,
+  formatCourseRow,
+} = require('../utils/timeUtils');
 const { broadcastChange } = require('../utils/liveEvents');
 
 const createCourse = async (req, res, next) => {
@@ -34,6 +40,18 @@ const createCourse = async (req, res, next) => {
       throw new Error(
         'Please provide courseName, courseCode, facultyName, description, credits, date, startTime, endTime, and capacity.'
       );
+    }
+
+    // Strict date validation: valid calendar date, no past dates, applyDeadline <= startDate
+    const dateError = validateCourseDates({
+      date,
+      startDate,
+      applyDeadline,
+      allowPastDates: false,
+    });
+    if (dateError) {
+      res.status(400);
+      throw new Error(dateError);
     }
 
     const startMin = parseTimeToMinutes(startTime);
@@ -173,20 +191,46 @@ const updateCourse = async (req, res, next) => {
       throw new Error('Start time must be a valid time strictly earlier than end time.');
     }
 
+    const currDate = toIsoDateString(current.date);
+    const currStart = toIsoDateString(current.start_date) || currDate;
+    const currDeadline = toIsoDateString(current.apply_deadline) || currStart;
+
+    const nextDate = date !== undefined ? toIsoDateString(date) : currDate;
+    const nextStartDate = startDate !== undefined ? toIsoDateString(startDate) : currStart;
+    const nextDeadline = applyDeadline !== undefined ? toIsoDateString(applyDeadline) : currDeadline;
+
+    // Validate calendar format & applyDeadline <= startDate
+    const dateError = validateCourseDates({
+      date: nextDate,
+      startDate: nextStartDate,
+      applyDeadline: nextDeadline,
+      allowPastDates: true,
+    });
+    if (dateError) {
+      res.status(400);
+      throw new Error(dateError);
+    }
+
+    // If the admin explicitly changed a date to a new value in the past, reject it
+    const today = getLocalTodayIso();
+    if (date !== undefined && nextDate !== currDate && nextDate < today) {
+      res.status(400);
+      throw new Error(`Updated class date (${nextDate}) cannot be in the past.`);
+    }
+    if (startDate !== undefined && nextStartDate !== currStart && nextStartDate < today) {
+      res.status(400);
+      throw new Error(`Updated course start date (${nextStartDate}) cannot be in the past.`);
+    }
+    if (applyDeadline !== undefined && nextDeadline !== currDeadline && nextDeadline < today) {
+      res.status(400);
+      throw new Error(`Updated last date to apply (${nextDeadline}) cannot be in the past.`);
+    }
+
     const nextName = courseName !== undefined ? courseName.trim() : current.course_name;
     const nextFaculty =
       facultyName !== undefined ? facultyName.trim() || 'TBA' : current.faculty_name;
     const nextDesc = description !== undefined ? description.trim() : current.description;
     const nextCredits = credits !== undefined ? Number(credits) : Number(current.credits);
-    const nextDate = date !== undefined ? toIsoDateString(date) : toIsoDateString(current.date);
-    const nextStartDate =
-      startDate !== undefined
-        ? toIsoDateString(startDate)
-        : toIsoDateString(current.start_date) || nextDate;
-    const nextDeadline =
-      applyDeadline !== undefined
-        ? toIsoDateString(applyDeadline)
-        : toIsoDateString(current.apply_deadline) || nextStartDate;
     const nextStatus = status !== undefined ? status : current.status;
 
     await db.query(
@@ -381,22 +425,23 @@ const getCourseEnrollments = async (req, res, next) => {
 const getAdminDashboard = async (req, res, next) => {
   try {
     const db = getPool();
+    const today = getLocalTodayIso();
 
-    // Execute all dashboard queries concurrently via Promise.all
     const [
       [[kpiRow]],
       [courseRows],
       [adminRows],
       [recentRows],
     ] = await Promise.all([
-      db.query(`
-        SELECT
+      db.query(
+        `SELECT
           (SELECT COUNT(*) FROM users WHERE role = 'student') AS total_students,
           (SELECT COUNT(*) FROM users WHERE role = 'admin') AS total_admins,
           (SELECT COUNT(*) FROM courses) AS total_courses,
-          (SELECT COUNT(*) FROM courses WHERE status = 'active') AS active_courses,
-          (SELECT COUNT(*) FROM enrollments WHERE status = 'enrolled') AS total_enrollments
-      `),
+          (SELECT COUNT(*) FROM courses WHERE status = 'active' AND (apply_deadline IS NULL OR apply_deadline >= ?)) AS active_courses,
+          (SELECT COUNT(*) FROM enrollments WHERE status = 'enrolled') AS total_enrollments`,
+        [today]
+      ),
       db.query('SELECT * FROM courses ORDER BY date ASC, course_code ASC'),
       db.query(
         "SELECT id, name, email, role, created_at FROM users WHERE role = 'admin' ORDER BY id ASC"
@@ -585,10 +630,6 @@ const getAuditLogs = async (req, res, next) => {
   }
 };
 
-/**
- * Optimized Student Directory query:
- * Paginates `users` FIRST (using idx_users_role_id), then aggregates enrollments only for the 15 rows on the current page!
- */
 const getStudents = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -806,7 +847,6 @@ const deleteStudentByAdmin = async (req, res, next) => {
 
     const student = rows[0];
 
-    // Single bulk JOIN update instead of N+1 loop
     const [releaseRes] = await conn.query(
       `UPDATE courses c
        INNER JOIN enrollments e ON c.id = e.course_id
